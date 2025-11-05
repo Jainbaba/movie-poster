@@ -1,0 +1,13 @@
+# Requirements for Hugging Face Spaces / Gradio deployment
+
+gradio>=4.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+
+# Face swapping core
+tqdm>=4.66.0
+httpx>=0.25.0
+onnx>=1.19.0
+onnxruntime-gpu>=1.23.0
+media-toolkit>=0.2.18
+Pillow>=10.0.0
