@@ -8,6 +8,9 @@ import cv2
 import numpy as np
 from face2face.core.face2face import Face2Face
 import logging
+import requests
+from PIL import Image
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,29 +28,91 @@ def get_model():
     return f2f_model
 
 
-def swap_faces_gradio(movie_poster, couples_photo, enhance_faces=True):
+def download_image_from_url(url):
+    """
+    Download image from URL and convert to numpy array
+
+    Args:
+        url: Image URL
+
+    Returns:
+        numpy array (RGB format) or None if failed
+    """
+    try:
+        logger.info(f"Downloading image from URL: {url}")
+
+        # Add headers to avoid blocking
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # Convert to PIL Image
+        img = Image.open(BytesIO(response.content))
+
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Convert to numpy array
+        img_array = np.array(img)
+
+        logger.info(f"Successfully downloaded image: {img_array.shape}")
+        return img_array
+
+    except Exception as e:
+        logger.error(f"Error downloading image from URL: {str(e)}")
+        return None
+
+
+def swap_faces_gradio(movie_poster, poster_url, couples_photo, couple_url, enhance_faces=True):
     """
     Swap faces from couples photo onto movie poster
 
     Args:
-        movie_poster: PIL Image or numpy array
-        couples_photo: PIL Image or numpy array
+        movie_poster: PIL Image or numpy array (uploaded file)
+        poster_url: URL string for poster image
+        couples_photo: PIL Image or numpy array (uploaded file)
+        couple_url: URL string for couple image
         enhance_faces: Whether to enhance face quality
 
     Returns:
         Swapped image as numpy array
     """
     try:
-        # Convert PIL to numpy if needed
-        if not isinstance(movie_poster, np.ndarray):
-            poster_img = np.array(movie_poster)
+        # Handle movie poster input (file upload or URL)
+        if poster_url and poster_url.strip():
+            logger.info("Using poster from URL")
+            poster_img = download_image_from_url(poster_url.strip())
+            if poster_img is None:
+                return None, "❌ Error: Failed to download movie poster from URL. Please check the URL."
+        elif movie_poster is not None:
+            logger.info("Using uploaded poster file")
+            # Convert PIL to numpy if needed
+            if not isinstance(movie_poster, np.ndarray):
+                poster_img = np.array(movie_poster)
+            else:
+                poster_img = movie_poster
         else:
-            poster_img = movie_poster
+            return None, "❌ Error: Please provide a movie poster (upload file or enter URL)"
 
-        if not isinstance(couples_photo, np.ndarray):
-            couple_img = np.array(couples_photo)
+        # Handle couples photo input (file upload or URL)
+        if couple_url and couple_url.strip():
+            logger.info("Using couple photo from URL")
+            couple_img = download_image_from_url(couple_url.strip())
+            if couple_img is None:
+                return None, "❌ Error: Failed to download couples photo from URL. Please check the URL."
+        elif couples_photo is not None:
+            logger.info("Using uploaded couple photo file")
+            # Convert PIL to numpy if needed
+            if not isinstance(couples_photo, np.ndarray):
+                couple_img = np.array(couples_photo)
+            else:
+                couple_img = couples_photo
         else:
-            couple_img = couples_photo
+            return None, "❌ Error: Please provide a couples photo (upload file or enter URL)"
 
         # Convert RGB to BGR (OpenCV format)
         poster_img = cv2.cvtColor(poster_img, cv2.COLOR_RGB2BGR)
@@ -140,8 +205,8 @@ def create_interface():
             Swap faces from a couples photo onto a movie poster using AI!
 
             **How it works:**
-            1. Upload a **movie poster** (with visible faces)
-            2. Upload a **couples photo** (with 2 faces)
+            1. **Upload** a movie poster OR **paste a URL** (with visible faces)
+            2. **Upload** a couples photo OR **paste a URL** (with 2 faces)
             3. Click "Swap Faces" and wait for the magic! ✨
 
             *Powered by InsightFace, GPEN, and Face2Face*
@@ -150,20 +215,34 @@ def create_interface():
 
         with gr.Row():
             with gr.Column():
+                gr.Markdown("### 📸 Movie Poster")
                 poster_input = gr.Image(
-                    label="📸 Movie Poster",
+                    label="Upload Movie Poster",
                     type="numpy",
                     sources=["upload", "clipboard"],
-                    height=400
+                    height=350
                 )
+                poster_url_input = gr.Textbox(
+                    label="🔗 OR Enter Image URL",
+                    placeholder="https://example.com/movie-poster.jpg",
+                    lines=1
+                )
+                gr.Markdown("*Either upload a file or enter a URL (URL takes priority)*")
 
             with gr.Column():
+                gr.Markdown("### 👥 Couples Photo")
                 couple_input = gr.Image(
-                    label="👥 Couples Photo",
+                    label="Upload Couples Photo",
                     type="numpy",
                     sources=["upload", "clipboard"],
-                    height=400
+                    height=350
                 )
+                couple_url_input = gr.Textbox(
+                    label="🔗 OR Enter Image URL",
+                    placeholder="https://example.com/couple-photo.jpg",
+                    lines=1
+                )
+                gr.Markdown("*Either upload a file or enter a URL (URL takes priority)*")
 
         with gr.Row():
             enhance_checkbox = gr.Checkbox(
@@ -219,13 +298,13 @@ def create_interface():
         # Event handlers
         swap_btn.click(
             fn=swap_faces_gradio,
-            inputs=[poster_input, couple_input, enhance_checkbox],
+            inputs=[poster_input, poster_url_input, couple_input, couple_url_input, enhance_checkbox],
             outputs=[output_image, info_output]
         )
 
         clear_btn.click(
-            fn=lambda: (None, None, None, ""),
-            outputs=[poster_input, couple_input, output_image, info_output]
+            fn=lambda: (None, "", None, "", None, ""),
+            outputs=[poster_input, poster_url_input, couple_input, couple_url_input, output_image, info_output]
         )
 
     return demo

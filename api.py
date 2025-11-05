@@ -5,7 +5,7 @@ A free API for swapping faces from a couples photo onto a movie poster.
 This API uses the face2face library powered by InsightFace for face detection and swapping.
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import StreamingResponse
 from typing import Optional
 import io
@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 from face2face.core.face2face import Face2Face
 import logging
+import requests
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +40,48 @@ def get_f2f():
     return f2f_instance
 
 
+def download_image_from_url(url: str) -> Optional[np.ndarray]:
+    """
+    Download image from URL and convert to numpy array
+
+    Args:
+        url: Image URL
+
+    Returns:
+        numpy array (BGR format for OpenCV) or None if failed
+    """
+    try:
+        logger.info(f"Downloading image from URL: {url}")
+
+        # Add headers to avoid blocking
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # Convert to PIL Image
+        img = Image.open(io.BytesIO(response.content))
+
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Convert to numpy array (RGB)
+        img_array = np.array(img)
+
+        # Convert RGB to BGR for OpenCV
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+        logger.info(f"Successfully downloaded image: {img_bgr.shape}")
+        return img_bgr
+
+    except Exception as e:
+        logger.error(f"Error downloading image from URL: {str(e)}")
+        return None
+
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -45,7 +89,9 @@ async def root():
         "status": "running",
         "message": "Movie Poster Face Swap API is running",
         "endpoints": {
-            "swap": "/swap - POST endpoint for face swapping",
+            "swap": "/swap - POST endpoint for face swapping (file upload)",
+            "swap-url": "/swap-url - POST endpoint for face swapping (image URLs)",
+            "swap-advanced": "/swap-advanced - POST endpoint with custom face mapping",
             "docs": "/docs - API documentation"
         }
     }
@@ -276,6 +322,125 @@ async def swap_faces_advanced(
         raise
     except Exception as e:
         logger.error(f"Error during advanced face swapping: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Face swapping failed: {str(e)}")
+
+
+@app.post("/swap-url")
+async def swap_faces_url(
+    poster_url: str = Form(..., description="URL of movie poster image"),
+    couple_url: str = Form(..., description="URL of couples photo"),
+    enhance_faces: bool = Form(True, description="Enable face enhancement"),
+    enhancement_model: str = Form("gpen_bfr_512", description="Enhancement model to use")
+):
+    """
+    Swap faces using image URLs instead of file uploads.
+
+    Parameters:
+    - poster_url: URL of the movie poster image
+    - couple_url: URL of the couples photo
+    - enhance_faces: Whether to enhance face quality after swapping (default: True)
+    - enhancement_model: Face enhancement model to use (default: gpen_bfr_512)
+
+    Returns:
+    - The movie poster with swapped faces
+
+    Example Usage:
+    ```bash
+    curl -X POST "http://localhost:8000/swap-url" \\
+      -F "poster_url=https://example.com/poster.jpg" \\
+      -F "couple_url=https://example.com/couple.jpg" \\
+      --output swapped_poster.jpg
+    ```
+    """
+    try:
+        logger.info("Received face swap request with URLs")
+
+        # Download images from URLs
+        logger.info(f"Downloading poster from: {poster_url}")
+        poster_img = download_image_from_url(poster_url)
+        if poster_img is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to download movie poster from URL: {poster_url}"
+            )
+
+        logger.info(f"Downloading couple photo from: {couple_url}")
+        couple_img = download_image_from_url(couple_url)
+        if couple_img is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to download couples photo from URL: {couple_url}"
+            )
+
+        logger.info(f"Poster size: {poster_img.shape}, Couple photo size: {couple_img.shape}")
+
+        # Get Face2Face instance
+        f2f = get_f2f()
+
+        # Detect faces in couples photo
+        logger.info("Detecting faces in couples photo...")
+        couple_faces = f2f.detect_faces(couple_img)
+
+        if len(couple_faces) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No faces detected in couples photo"
+            )
+
+        if len(couple_faces) > 2:
+            logger.warning(f"Found {len(couple_faces)} faces in couples photo, using first 2")
+            couple_faces = couple_faces[:2]
+
+        logger.info(f"Found {len(couple_faces)} face(s) in couples photo")
+
+        # Detect faces in movie poster
+        logger.info("Detecting faces in movie poster...")
+        poster_faces = f2f.detect_faces(poster_img)
+
+        if len(poster_faces) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No faces detected in movie poster"
+            )
+
+        logger.info(f"Found {len(poster_faces)} face(s) in movie poster")
+
+        # Perform face swapping
+        logger.info("Swapping faces...")
+        enhancement = enhancement_model if enhance_faces else None
+
+        swapped_result = f2f.swap(
+            media=(couple_img, poster_img),
+            faces=couple_faces,
+            enhance_face_model=enhancement
+        )
+
+        # Convert result to image
+        if hasattr(swapped_result, 'get_image'):
+            swapped_img = swapped_result.get_image()
+        elif isinstance(swapped_result, np.ndarray):
+            swapped_img = swapped_result
+        else:
+            swapped_img = np.array(swapped_result)
+
+        logger.info("Face swapping completed successfully")
+
+        # Encode result as JPEG
+        _, buffer = cv2.imencode('.jpg', swapped_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+        # Return as streaming response
+        return StreamingResponse(
+            io.BytesIO(buffer.tobytes()),
+            media_type="image/jpeg",
+            headers={
+                "Content-Disposition": "attachment; filename=swapped_poster.jpg"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during face swapping: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Face swapping failed: {str(e)}")
 
 
