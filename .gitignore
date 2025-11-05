@@ -66,6 +66,7 @@ logs/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!colab_notebook.ipynb
 
 # Coverage
 .coverage
