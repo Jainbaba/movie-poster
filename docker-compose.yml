@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  movie-poster-api:
+    build: .
+    container_name: movie-poster-face-swap
+    ports:
+      - "8000:8000"
+    environment:
+      - DEVICE_ID=0
+    volumes:
+      # Mount for model cache (optional, speeds up restart)
+      - model-cache:/root/.insightface
+      # Mount for temporary files (optional)
+      - ./temp:/app/temp
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+    # Uncomment for GPU support (requires nvidia-docker)
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+
+volumes:
+  model-cache:
+    driver: local
